@@ -63,7 +63,7 @@ class CtmServer(object):
     if event_name:
       parts.append(EVENT_PREFIX + event_name)
     if lock:
-      parts.append(LOCK_PREFIX + prefix + name)
+      parts.append(LOCK_PREFIX + prefix + str(name))
     else:
       parts.append(prefix + str(name))
     return os.path.join(*parts)
@@ -96,6 +96,11 @@ class CtmServer(object):
     with open(self._GetPath(PLAYER_PREFIX, player.id,
                             event_name=event_name), 'w') as player_file:
       msgpack.pack(player, player_file)
+
+  def _ModifyPlayerScanId(self, event_name, player_id, scan_id):
+    player = self._ReadPlayer(event_name, player_id)
+    player = ctm_common.Player(player.id, player.name, scan_id)
+    self._WritePlayer(event_name, player)
 
   def _GetScanId(self, event_name):
     while True:
@@ -131,6 +136,10 @@ class CtmServer(object):
         raise ctm_common.NotFoundError('Event %s does not exist.' % event_name)
       yield
 
+  @contextlib.contextmanager
+  def _Empty(self):
+    yield
+
   # Event management
   def ListEvents(self):
     with self._SharedLock(MASTER_PREFIX, EVENT_PREFIX):
@@ -165,7 +174,9 @@ class CtmServer(object):
       with self._SharedLock(
           MASTER_PREFIX, PLAYER_PREFIX, event_name=event_name):
         for player_id in self._List(PLAYER_PREFIX, event_name=event_name):
-          results.append(self._ReadPlayer(event_name, player_id))
+          with self._SharedLock(
+              PLAYER_PREFIX, player_id, event_name=event_name):
+            results.append(self._ReadPlayer(event_name, player_id))
     return results
 
   def SetPlayers(self, event_name, players):
@@ -173,10 +184,14 @@ class CtmServer(object):
       with self._ExclusiveLock(
           MASTER_PREFIX, PLAYER_PREFIX, event_name=event_name):
         for player_id in self._List(PLAYER_PREFIX, event_name=event_name):
-          os.remove(
-              self._GetPath(PLAYER_PREFIX, player_id, event_name=event_name))
+          with self._ExclusiveLock(
+              PLAYER_PREFIX, player_id, event_name=event_name):
+            os.remove(
+                self._GetPath(PLAYER_PREFIX, player_id, event_name=event_name))
         for player in players:
-          self._WritePlayer(event_name, player)
+          with self._ExclusiveLock(
+              PLAYER_PREFIX, player.id, event_name=event_name):
+            self._WritePlayer(event_name, player)
 
   # Scan management
   def ListScans(self, event_name, unmarked_only=False):
@@ -187,7 +202,7 @@ class CtmServer(object):
         for scan_id in self._List(SCAN_PREFIX, event_name=event_name):
           with self._SharedLock(SCAN_PREFIX, scan_id, event_name=event_name):
             scan = self._ReadScan(event_name, scan_id)
-            if not unmarked_only or scan.player is None:
+            if not unmarked_only or scan.player_id is None:
               results.append(scan)
     return results
 
@@ -203,7 +218,7 @@ class CtmServer(object):
           if os.path.exists(
               self._GetPath(SCAN_DATA_PREFIX, scan_id, event_name=event_name)):
             data = self._ReadScanData(event_name, scan_id)
-            scan = ctm_common.Scan(scan.id, scan.player, data)
+            scan = ctm_common.Scan(scan.id, scan.player_id, data)
           return scan
 
   def PostScan(self, event_name, data):
@@ -225,5 +240,34 @@ class CtmServer(object):
             self._GetPath(SCAN_PREFIX, scan_id, event_name=event_name)):
           raise ctm_common.NotFoundError('Scan %s does not exist.' % scan_id)
         with self._ExclusiveLock(SCAN_PREFIX, scan_id, event_name=event_name):
-          scan = ctm_common.Scan(scan_id, player_id, None)
-          self._WriteScan(event_name, scan)
+          if player_id is not None:
+            new_player_lock = self._ExclusiveLock(
+                PLAYER_PREFIX, player_id, event_name=event_name)
+          else:
+            new_player_lock = self._Empty()
+          with new_player_lock:
+            if (player_id is not None and
+                not os.path.exists(
+                    self._GetPath(PLAYER_PREFIX, player_id,
+                                  event_name=event_name))):
+              raise ctm_common.NotFoundError(
+                  'Player %s does not exist.' % player_id)
+
+            existing_scan = self._ReadScan(event_name, scan_id)
+            if player_id == existing_scan.player_id:
+              return
+            new_scan = ctm_common.Scan(scan_id, player_id, None)
+            self._WriteScan(event_name, new_scan)
+
+            if existing_scan.player_id is not None:
+              old_player_lock = self._ExclusiveLock(
+                  PLAYER_PREFIX, existing_scan.player_id,
+                  event_name=event_name)
+            else:
+              old_player_lock = self._Empty()
+            with old_player_lock:
+              if existing_scan.player_id is not None:
+                self._ModifyPlayerScanId(
+                    event_name, existing_scan.player_id, None)
+              if player_id is not None:
+                self._ModifyPlayerScanId(event_name, player_id, scan_id)

@@ -55,16 +55,16 @@ class TestCtm(unittest.TestCase):
     self.assertEqual(actual, expected)
 
   def testSetPlayersError(self):
-    players = [ctm_common.Player(0, 'a'),
-               ctm_common.Player(1, 'b')]
+    players = [ctm_common.Player(0, 'a', None),
+               ctm_common.Player(1, 'b', None)]
     self.assertRaises(
         ctm_common.NotFoundError,
         self.server.SetPlayers, 'test', players)
 
   def testSetPlayers(self):
     self.server.CreateEvent('test')
-    players = [ctm_common.Player(0, 'a'),
-               ctm_common.Player(1, 'b')]
+    players = [ctm_common.Player(0, 'a', None),
+               ctm_common.Player(1, 'b', None)]
     self.server.SetPlayers('test', players)
     actual = self.server.ListPlayers('test')
     self.assertEqual(actual, players)
@@ -128,23 +128,56 @@ class TestCtm(unittest.TestCase):
 
   def testMarkScan(self):
     self.server.CreateEvent('test')
+    self.server.SetPlayers('test', [ctm_common.Player(0, 'a', None)])
     scan_id = self.server.PostScan('test', 'data')
     self.server.MarkScan('test', scan_id, 0)
+
     expected = ctm_common.Scan(scan_id, 0, 'data')
     actual = self.server.GetScan('test', scan_id)
     self.assertEqual(actual, expected)
+    self.assertEqual(
+        self.server.ListPlayers('test'),
+        [ctm_common.Player(0, 'a', scan_id)])
+
+  def testMarkScanPlayerError(self):
+    self.server.CreateEvent('test')
+    scan_id = self.server.PostScan('test', 'data')
+    self.assertRaises(
+        ctm_common.NotFoundError, self.server.MarkScan, 'test', scan_id, 0)
 
   def testMarkScanClear(self):
     self.server.CreateEvent('test')
+    self.server.SetPlayers('test', [ctm_common.Player(0, 'a', None)])
     scan_id = self.server.PostScan('test', 'data')
     self.server.MarkScan('test', scan_id, 0)
     self.server.MarkScan('test', scan_id, None)
+
     expected = ctm_common.Scan(scan_id, None, 'data')
     actual = self.server.GetScan('test', scan_id)
     self.assertEqual(actual, expected)
 
+  def testMarkScanChange(self):
+    self.server.CreateEvent('test')
+    self.server.SetPlayers(
+        'test', [ctm_common.Player(0, 'a', None),
+                 ctm_common.Player(1, 'b', None)])
+    scan_id = self.server.PostScan('test', 'data')
+
+    self.server.MarkScan('test', scan_id, 0)
+    self.assertEqual(
+        self.server.ListPlayers('test'),
+        [ctm_common.Player(0, 'a', scan_id),
+         ctm_common.Player(1, 'b', None)])
+
+    self.server.MarkScan('test', scan_id, 1)
+    self.assertEqual(
+        self.server.ListPlayers('test'),
+        [ctm_common.Player(0, 'a', None),
+         ctm_common.Player(1, 'b', scan_id)])
+
   def testListScansMarkedAndUnmarked(self):
     self.server.CreateEvent('test')
+    self.server.SetPlayers('test', [ctm_common.Player(0, 'a', None)])
     scan_id_0 = self.server.PostScan('test', 'data')
     scan_id_1 = self.server.PostScan('test', 'data')
     self.server.MarkScan('test', scan_id_0, 0)
@@ -154,8 +187,9 @@ class TestCtm(unittest.TestCase):
     actual = self.server.ListScans('test')
     self.assertEqual(actual, expected)
 
-  def testListScansMarkedAndUnmarked(self):
+  def testListScansUnmarkedOnly(self):
     self.server.CreateEvent('test')
+    self.server.SetPlayers('test', [ctm_common.Player(0, 'a', None)])
     scan_id_0 = self.server.PostScan('test', 'data')
     scan_id_1 = self.server.PostScan('test', 'data')
     self.server.MarkScan('test', scan_id_0, 0)
